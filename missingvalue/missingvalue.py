@@ -3,12 +3,16 @@ import pandas as pd
 import pickle
 
 import datetime
+import scipy
 
 from sklearn import preprocessing
+from sklearn.feature_selection import SelectFromModel
+from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import KFold
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neural_network import MLPClassifier
+from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
 import logging
@@ -82,7 +86,8 @@ def _estimate_missing_value(X_train, y_train, ofilename):
     features= [_feature for _feature in list(X_train.columns.values) if _feature!='Unnamed: 0']
     #_estimate_threshold_missing_value(X_train, y_train, features, ofilename)
     features = pickle.load( open( ofilename, "rb" ) )
-    _estimate_variance_values(X_train, y_train, features, ofilename)
+   # _estimate_variance_values(X_train, y_train, features, ofilename)
+    _estimate_covariance_values(X_train, y_train, features, ofilename)
     
 
 def _estimate_threshold_missing_value(X_train, y_train, features, ofilename):
@@ -113,7 +118,10 @@ def _estimate_threshold_missing_value(X_train, y_train, features, ofilename):
     
         
 
-def _estimate_threshold(X_train, y_train, df_thresholds):
+def _estimate_threshold(X_train, y_train, func, threshold):
+    
+    pass
+    """
     _max_threshold=np.max(df_thresholds)
     _min_threshold=np.min(df_thresholds)
     if isinstance(_max_threshold, float) or isinstance(_min_threshold, float):
@@ -139,23 +147,168 @@ def _estimate_threshold(X_train, y_train, df_thresholds):
             scores[_i_threshold]=_i_scores
                 
     return
-        
-        
-        
-        
+    """
     
-    pass
     
 def _estimate_variance_values(X_train, y_train, features, ofilename):
-    _max_scores=_estimate_scores(X_train, y_train, features)
     
     imputer = preprocessing.Imputer(missing_values="NaN", strategy="mean", axis=0)
     X_train= imputer.fit_transform(X_train[features])
+    sel = VarianceThreshold()
+    X_train = sel.fit_transform(X_train)
+    _max_score = _estimate_classifiers_matrix(X_train, y_train)
+    _ifeatures = [_ifeature for _ifeature, v in enumerate(sel.get_support()) if v]
+    features = features[_ifeatures]
+    
+    minmax_scale = preprocessing.MinMaxScaler().fit(X_train)
+    X_train = minmax_scale.transform(X_train)
+    _x, _y = X_train.shape
+    """
+    df_std_thresholds=set()
+    for _id in xrange(_y):
+        df_std_thresholds.add(int(X_train[:, _id].std()*100))
+    df_std_thresholds=np.array(df_std_thresholds)
+    print(df_std_thresholds)
+    return
+    df_std_thresholds=np.sort(df_std_thresholds)
+    return
+    npfunc=np.vectorize(lambda x: x*0.01)
+    _ithresholds=npfunc(df_std_thresholds)
+    if _ithresholds.size>10:
+        _ithresholds=np.linspace (np.min(df_std_thresholds), np.max(df_std_thresholds), num=5)
+   """
+    _ithresholds=np.linspace (0.05, 0.35, num=10)
+    scores=[]
+    for _ithreshold in _ithresholds:
+        sel = VarianceThreshold(threshold= _ithreshold)
+        try:
+            X_train_thresholds = sel.fit_transform(X_train)
+            _iscore = _estimate_classifiers_matrix(X_train_thresholds, y_train)
+        except ValueError:
+            logging.warning('value error')
+            scores.append(0)
+        scores.append(_iscore)
+        
+    scores = np.array(scores)
+    _imax=np.argmax(scores)
+    logging.info("maximum scores %f", scores[_imax])
+    sel=VarianceThreshold(threshold=_ithresholds[_imax])
+    sel.fit_transform(X_train)
+    _ifeatures = [_ifeature for _ifeature, v in enumerate(sel.get_support()) if v]
+    with open(ofilename, 'wb') as fp:
+        pickle.dump(features[_ifeatures], fp)
+    return
+    
+    
+def _estimate_covariance_values(X_train, y_train, features, ofilename):
+    imputer = preprocessing.Imputer(missing_values="NaN", strategy="mean", axis=0)
+    X_train= imputer.fit_transform(X_train[features])
+    _ilength, _jlength=X_train.shape
+    
+    X_train = preprocessing.normalize(X_train, norm='l2')
+    logging.info('features: %d', _jlength)
+    
+    """
+    nproundfunc=np.vectorize(lambda x: round(x,4))
+    """
+    
+    from scipy import stats
+    _sortthresholdvalues=[]
+    _insertlength=[]
+    for i in xrange(_ilength):
+        for j in xrange(i+1, _jlength):
+            x=X_train[:,i]
+            y=X_train[:,j]
+            slope, intercept, r_value, p_value, std_err = stats.linregress(x,y)
+            _value=(i,j, abs(p_value))
+            _sortthresholdvalues.append(_value)
+        
+    
+    #_sortthresholdvalues.sort(key=lambda tup: abs(tup[2]))
+    #_sortthresholdvalues.sort(key=lambda tup: tup[2], reverse=True)
+    scores=_estimate_classifiers_matrix(X_train, y_train)
+    _thresholds=np.sort(np.sort(np.unique(np.array([round(tup[2],2) for tup in _sortthresholdvalues if tup[2]>0]))))[::-1]
+    _ifeatures=np.ones(_jlength)
+    
+    for _threshold in _thresholds:
+        lsvc = LinearSVC(C=_threshold, penalty="l1", dual=False).fit(X_train, y_train)
+        model = SelectFromModel(lsvc, prefit=True)
+        X_new = model.transform(X_train)
+        _ifeatures=model.get_support()
+        
+        _iscore=_estimate_classifiers_matrix(X_train[:, [_i for _i, v in enumerate(_ifeatures) if v]], y_train)
+        if _iscore<scores:
+            break
+            
+    with open(ofilename+'_temp', 'wb') as fp:
+        pickle.dump(features[_ifeatures], fp)
+    return
+            
+            
+            
+        
+            
+        
+    
+        
+        
+        
+    
+    
+    return
+    
+    
+    """
+    with open('featurethresholdname', 'wb') as fp:
+        pickle.dump(_sortthresholdvalues, fp)
+    print(round(np.min(_sortthresholdvalues),2),round(np.max(_sortthresholdvalues),2))
+    return
+    
+    _sortthresholdvalues= pickle.load( open( 'featurethresholdname', "rb" ))
+    """
+    _thresholdvalues=np.linspace(round(np.min(_sortthresholdvalues),2),round(np.max(_sortthresholdvalues),2), num=10)
+    _thresholdvalues=_thresholdvalues[::-1]
+    scores=[]
+    print(_thresholdvalues)
+    for _threshold in _thresholdvalues:
+        tuplist=np.ones(_ilength)
+        _outlist= np.array([[tup[0], tup[1]] for tup in _sortthresholdvalues if abs(tup[2])>_threshold])
+        """
+        np.random.shuffle(_outlist)
+        for i in xrange(_outlist.size):
+            a,b=_outlist[i]
+            if tuplist[a]==0 or tuplist[b]==0:
+                continue
+            tuplist[a]=0
+        #_ifeatures=[ for i in]
+        pass
+        """
+        
+        
+        
+    
+    
+    
+    
+    
+            
+    
+    
+    
+    """
+    
+    
+    
+        
+    
+    
+    return
+    
+
     std_scale = preprocessing.StandardScaler().fit(X_train)
     df_std = std_scale.transform(X_train)
     
-    minmax_scale = preprocessing.MinMaxScaler().fit(X_train)
-    df_minmax = minmax_scale.transform(X_train)
+
     
     df_std_thresholds=[]
     df_minmax_thresholds=[]
@@ -214,7 +367,7 @@ def _estimate_variance_values(X_train, y_train, features, ofilename):
         
     
     pass
-        
+    """
     
     
     

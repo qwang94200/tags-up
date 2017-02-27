@@ -33,6 +33,23 @@ def _read_missing_columns(filename):
     features = ['missingvalue', 'columns']
     print(fd[features])
     
+def _read_numpy(filename):
+    return np.genfromtxt(filename, delimiter=',')
+def _write_numpy(filename, x):
+    np.savetxt(filename, x, delimiter=',')
+    
+def _select_basedpredictionvalue():
+        
+    """
+    
+    print(len(X_train.index))
+    X_train['prediction']=_trainLAB.as_matrix()[:,2:]
+    X_train=X_train.dropna(subset=['prediction'])
+    print(len(X_train.index))
+    print(X_train.head(5))
+    print(X_trainLAB[2])
+    """
+    pass
 
 
 
